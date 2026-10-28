@@ -1,0 +1,194 @@
+diff --git a/test.py b/test.py
+index c3ab4a1..84d002f 100644
+--- a/test.py
++++ b/test.py
+@@ -1,4 +1,3 @@
+-from turtle import mode
+ from prompt import *
+ from utils.tools import *
+ import argparse
+@@ -43,7 +42,8 @@ def test(data, cipher_type, model, model_name, shot_number=3, is_hint=False, num
+         elif "gemini" in model_name or "claude" in model_name:
+             response = model(model_name, system_prompt, user_prompt)
+         else:
+-            response = model(system_prompt=system_prompt, prompts=user_prompt)
++            # witness eval patch: forward the output budget and a seed (upstream: server default max_tokens, seed 42)
++            response = model(system_prompt=system_prompt, prompts=user_prompt, max_completion_tokens=args.max_tokens, seed=args.seed)
+         sentence = extract_result_sentences(response)
+ 
+         is_correct = compare_strings(sentence, item["plaintext"])
+@@ -101,7 +101,8 @@ def main(args):
+     elif "gemini" in args.model or "claude" in args.model:
+         model = Agent()
+     else:
+-        model = None#OpenAILLM(model_name=args.model)
++        # witness eval patch: any other --model is a served name on an OpenAI-compatible endpoint (--base_url / OPENAI_BASE_URL)
++        model = OpenAILLM(model_name=args.model, base_url=args.base_url)
+     test(data, args.cipher_type, model, args.model, args.shot_number, args.is_hint, args.number)
+ 
+ 
+@@ -117,31 +118,11 @@ if __name__ == "__main__":
+     parser.add_argument("--number", action="store_true", help="Whether to encrypt numbers")
+     parser.add_argument("--is_hint", action="store_true", help="Whether to provide hints")
+     parser.add_argument("--shot_number", default=3, type=int, help="Number of few-shot attempts")
+-    parser.add_argument(
+-        "--model",
+-        default="o1-mini",
+-        type=str,
+-        choices=[
+-            "deepseek-r1",
+-            "qwq",
+-            "o1-mini",
+-            "gpt-4o-2024-11-20",
+-            "gpt-4o-2024-08-06",
+-            "gpt-4o-mini-2024-07-18",
+-            "o1-preview-2024-09-12",
+-            "deepseek-v3",
+-            "MiniMaxText01",
+-            "claude-3-5-sonnet-20241022",
+-            "gemini-2.0-flash-thinking-exp",
+-            "gemini-1.5-pro",
+-            "gemini-2.0-flash-exp",
+-            "o1-2024-12-17",
+-            "o1",
+-            "DeepSeek-V3",
+-            "DeepSeek-R1",
+-        ],
+-        help="Model name",
+-    )
++    # witness eval patch: no hardcoded model whitelist; served names go straight to the OpenAI-compatible endpoint
++    parser.add_argument("--model", default="o1-mini", type=str, help="Model name (any served name for the OpenAI path)")
++    parser.add_argument("--base_url", default=None, type=str, help="OpenAI-compatible base URL (default: OPENAI_BASE_URL / OPENAI_API_BASE)")
++    parser.add_argument("--max_tokens", default=4096, type=int, help="max_tokens forwarded to the endpoint")
++    parser.add_argument("--seed", default=42, type=int, help="sampling seed forwarded to the endpoint")
+     args = parser.parse_args()
+ 
+     main(args)
+diff --git a/utils/tools.py b/utils/tools.py
+index bd34d7e..20d77df 100644
+--- a/utils/tools.py
++++ b/utils/tools.py
+@@ -1,17 +1,15 @@
+-import requests
+ import json
+ from tqdm import tqdm
+-from dotenv import load_dotenv
+ import os
+ import re
++import time
+ from typing import List
+ from openai import OpenAI
+ from datetime import datetime
+ from time import sleep
+ from Levenshtein import distance as levenshtein_distance
+-from sklearn.feature_extraction.text import TfidfVectorizer
+-from sklearn.metrics.pairwise import cosine_similarity
+-from transformers import AutoModelForCausalLM, AutoTokenizer
++# witness eval patch: requests / dotenv / sklearn / transformers are imported lazily where used (Agent, OpenAILLM
++# with a key file, cosine_similarity_text, QwQLLM) so the OpenAI path needs only openai + Levenshtein + tqdm.
+ 
+ 
+ def create_payload(model_name, system_prompt, user_prompt):
+@@ -56,6 +54,7 @@ class Agent:
+         self.headers = {"Accept": "application/json", "Authorization": f"Bearer {Skey}", "User-Agent": "Apifox/1.0.0 (https://apifox.com)", "Content-Type": "application/json"}
+ 
+     def __call__(self, model_name, system_prompt, user_prompt):
++        import requests
+         while True:
+             try:
+                 payload = create_payload(model_name, system_prompt, user_prompt)
+@@ -76,15 +75,17 @@ class Agent:
+ 
+ 
+ class OpenAILLM:
+-    def __init__(self, model_name, api_key_file_path):
+-
++    def __init__(self, model_name, api_key_file_path=None, base_url=None, api_key=None):
++        # witness eval patch: any OpenAI-compatible endpoint (self-hosted SGLang). base_url from the argument or
++        # OPENAI_BASE_URL / OPENAI_API_BASE; the key file is optional (a local server needs no key).
+         self.model_name = model_name
+-        load_dotenv(os.path.expanduser(api_key_file_path))
+-
+-        self.client = OpenAI()
+-        self.client.base_url = os.getenv("OPENAI_API_BASE")
+-        keys = os.getenv("OPENAI_API_KEY")
+-        self.client.api_key = keys.split(",")[0]
++        if api_key_file_path:
++            from dotenv import load_dotenv
++            load_dotenv(os.path.expanduser(api_key_file_path))
++        base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
++        keys = api_key or os.getenv("OPENAI_API_KEY") or "x"
++        self.client = OpenAI(base_url=base_url, api_key=keys.split(",")[0],
++                             timeout=float(os.getenv("CB_HTTP_TIMEOUT", "3600")), max_retries=2)
+ 
+     def __call__(
+         self,
+@@ -140,19 +141,30 @@ class OpenAILLM:
+         retry = 0
+         while retry < max_num_retries:
+             try:
++                # witness eval patch: forward max_tokens (upstream never sent it -> server default 128 on SGLang);
++                # temperature and top_p are NOT sent (server --sampling-defaults decide, identical for every arm);
++                # seed is forwarded (SGLang maps it to sampling_seed; the driver passes a per-(rep,item) seed).
++                t0 = time.time()
+                 completion = self.client.chat.completions.create(
+                     model=self.model_name,
+                     messages=messages,
+-                    # temperature=temperature,
+-                    top_p=top_p,
+-                    # max_completion_tokens=max_completion_tokens,
++                    max_tokens=max_completion_tokens,
+                     seed=seed,
+                     stop=stop,
+                 )
++                latency = time.time() - t0
+                 content = completion.choices[0].message.content
+                 if not return_full:
+                     return content
+ 
++                choice = completion.choices[0]
++                msg = choice.message
++                usage = getattr(completion, "usage", None)
++                details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
++                reasoning = getattr(msg, "reasoning_content", None) or (getattr(msg, "model_extra", None) or {}).get("reasoning_content")
++                matched_stop = getattr(choice, "matched_stop", None)
++                if matched_stop is None:
++                    matched_stop = (getattr(choice, "model_extra", None) or {}).get("matched_stop")
+                 ret_dict = {
+                     "prompt": prompt,
+                     "system_prompt": system_prompt,
+@@ -162,6 +174,17 @@ class OpenAILLM:
+                     "response": content,
+                     "response_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                     # "completion_obj": completion,
++                    # witness eval patch: per-call diagnostics for the call log / gates
++                    "served_model": getattr(completion, "model", None),
++                    "finish_reason": getattr(choice, "finish_reason", None),
++                    "matched_stop": matched_stop,
++                    "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage is not None else None,
++                    "completion_tokens": getattr(usage, "completion_tokens", None) if usage is not None else None,
++                    "reasoning_tokens": getattr(details, "reasoning_tokens", None) if details is not None else None,
++                    "reasoning_content": reasoning,
++                    "latency_s": latency,
++                    "attempts": retry + 1,
++                    "seed": seed,
+                 }
+                 return ret_dict
+ 
+@@ -230,6 +253,7 @@ class DeepSeek_R1:
+ 
+ class QwQLLM:
+     def __init__(self, model_name="Qwen/QwQ-32B-Preview"):
++        from transformers import AutoModelForCausalLM, AutoTokenizer
+         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+         self.system_message = {"role": "system", "content": "You are a helpful and harmless assistant. You are Qwen developed by Alibaba. You should think step-by-step."}
+@@ -247,6 +271,8 @@ class QwQLLM:
+ 
+ 
+ def cosine_similarity_text(str1, str2):
++    from sklearn.feature_extraction.text import TfidfVectorizer
++    from sklearn.metrics.pairwise import cosine_similarity
+     vectorizer = TfidfVectorizer()
+     tfidf_matrix = vectorizer.fit_transform([str1, str2])
+     return cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]

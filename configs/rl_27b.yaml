@@ -1,0 +1,14 @@
+# Qwen3.8-27B on one 8-GPU node: Megatron TP4 + sequence parallel (DP2), one SGLang engine
+# over all 8 GPUs, optimizer state offloaded to CPU.
+megatron_model_type: qwen3.8-27B
+hf_checkpoint: ${MODEL_DIR}/Qwen3.8-27B
+ref_load: ${MODEL_DIR}/Qwen3.8-27B_torch_dist
+optimizer_cpu_offload: true
+overlap_cpu_optimizer_d2h_h2d: true
+use_precision_aware_optimizer: true
+tensor_model_parallel_size: 4
+max_tokens_per_gpu: 8192
+rollout_num_gpus_per_engine: 8
+sglang_mem_fraction_static: 0.8
+actor_num_gpus_per_node: 8
+num_gpus_per_node: 8

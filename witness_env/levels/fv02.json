@@ -1,0 +1,7 @@
+[
+{"cols":3,"rows":3,"start":[0,3],"end":[3,3],"weirs":{"1,1":0}},
+{"cols":3,"rows":3,"start":[0,0],"end":[3,0],"weirs":{"1,1":2}},
+{"cols":3,"rows":3,"start":[0,0],"end":[3,0],"weirs":{"1,1":0}},
+{"cols":3,"rows":3,"start":[3,0],"end":[3,3],"weirs":{"1,1":2}},
+{"cols":4,"rows":4,"start":[0,3],"end":[3,1],"weirs":{"2,1":2,"3,3":0}}
+]

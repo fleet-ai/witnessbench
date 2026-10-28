@@ -1,0 +1,12 @@
+[
+{"cols":1,"rows":2,"start":[0,2],"end":[1,0],"tetris":{"0,1":{"shape":[[0,0]],"rotated":false,"negative":false}}},
+{"cols":1,"rows":2,"start":[0,2],"end":[1,0],"tetris":{"0,0":{"shape":[[0,0]],"rotated":false,"negative":false},"0,1":{"shape":[[0,0]],"rotated":false,"negative":false}}},
+{"cols":1,"rows":3,"start":[0,3],"end":[1,0],"tetris":{"0,2":{"shape":[[0,0]],"rotated":false,"negative":false}}},
+{"cols":1,"rows":3,"start":[0,3],"end":[1,0],"tetris":{"0,2":{"shape":[[0,0],[0,1]],"rotated":false,"negative":false}}},
+{"cols":1,"rows":3,"start":[0,3],"end":[1,0],"tetris":{"0,1":{"shape":[[0,0]],"rotated":false,"negative":false},"0,2":{"shape":[[0,0]],"rotated":false,"negative":false}},"breakpoints":[[[0,2],[1,2]]]},
+{"cols":2,"rows":2,"start":[0,2],"end":[2,0],"tetris":{"0,0":{"shape":[[0,0]],"rotated":false,"negative":false},"0,1":{"shape":[[1,0],[0,1],[1,1]],"rotated":false,"negative":false}},"breakpoints":[[[0,0],[1,0]],[[1,2],[2,2]]]},
+{"cols":1,"rows":4,"start":[0,4],"end":[1,0],"tetris":{"0,3":{"shape":[[0,0],[0,1],[0,2],[0,3]],"rotated":true,"negative":false}}},
+{"cols":2,"rows":3,"start":[0,3],"end":[2,0],"tetris":{"0,2":{"shape":[[0,0],[1,0],[2,0],[2,1]],"rotated":true,"negative":false}}},
+{"cols":2,"rows":2,"start":[0,2],"end":[2,0],"tetris":{"0,1":{"shape":[[0,0],[0,1],[1,1]],"rotated":false,"negative":false}}},
+{"cols":1,"rows":3,"start":[0,3],"end":[1,0],"tetris":{"0,1":{"shape":[[0,0]],"rotated":false,"negative":false},"0,2":{"shape":[[0,0]],"rotated":false,"negative":false}},"breakpoints":[[[1,1],[1,2]],[[0,2],[0,3]]]}
+]

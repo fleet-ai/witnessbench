@@ -1,0 +1,53 @@
+cff-version: 1.2.0
+message: "If you use WitnessBench, please cite the paper below."
+title: "WitnessBench"
+type: software
+version: "0.1.0"
+license: MIT
+url: "https://witnessbench.ai"
+repository-code: "https://github.com/fleet-ai/witnessbench"
+authors:
+  - family-names: Ning
+    given-names: Guanghan
+  - family-names: Liu
+    given-names: Ping
+  - family-names: Li
+    given-names: Linyi
+  - family-names: Zheng
+    given-names: Huangjie
+  - family-names: Neervannan
+    given-names: Arjun
+  - family-names: Nguyen
+    given-names: Huu
+  - family-names: Sklar
+    given-names: Michael
+  - family-names: Zorlu
+    given-names: Deniz
+  - family-names: Ouporov
+    given-names: Nicolai
+preferred-citation:
+  type: article
+  title: "Witness: Discovery, Deciphering, and Epiphany in Interactive Puzzle Environments"
+  journal: "arXiv preprint arXiv:2609.32208"
+  year: 2026
+  doi: "10.48550/arXiv.2609.32208"
+  url: "https://arxiv.org/abs/2609.32208"
+  authors:
+    - family-names: Ning
+      given-names: Guanghan
+    - family-names: Liu
+      given-names: Ping
+    - family-names: Li
+      given-names: Linyi
+    - family-names: Zheng
+      given-names: Huangjie
+    - family-names: Neervannan
+      given-names: Arjun
+    - family-names: Nguyen
+      given-names: Huu
+    - family-names: Sklar
+      given-names: Michael
+    - family-names: Zorlu
+      given-names: Deniz
+    - family-names: Ouporov
+      given-names: Nicolai

@@ -1,0 +1,576 @@
+diff --git a/wason_experiments/src/models/gpt_4o.py b/wason_experiments/src/models/gpt_4o.py
+index e621060c..71128255 100644
+--- a/wason_experiments/src/models/gpt_4o.py
++++ b/wason_experiments/src/models/gpt_4o.py
+@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Union, Optional
+ import os
+ import time
+ import random
++import json
+ 
+ from openai import OpenAI, APIError, RateLimitError  # pip install openai>=1.40.0
+ 
+@@ -40,6 +41,20 @@ class OpenAIChat:
+         model: e.g. "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", etc.
+         """
+         self.model_name = model
++        # witness eval patch: the harness requires --model to start with "gpt-" (see run_experiment.build_model),
++        # but the SGLang server is registered under its own served-model-name. OPENAI_MODEL_OVERRIDE is the name
++        # sent in the API "model" field; self.model_name (gpt-...) is only used for local dispatch/naming.
++        self.api_model = os.getenv("OPENAI_MODEL_OVERRIDE") or model
++        # witness eval patch: max_new_tokens is 256 in the paper for non-thinking models; thinking models need
++        # 16384 (paper C.1). Configurable via F2F_MAX_NEW_TOKENS so the same wrapper serves both dialects.
++        self._max_new_tokens = int(os.getenv("F2F_MAX_NEW_TOKENS", "256"))
++        # witness eval patch: optional per-call JSONL log (finish_reason, usage) for truncation/format gates.
++        self._call_log = os.getenv("F2F_CALL_LOG") or None
++        # witness eval patch: stop strings as a JSON list. Default ["```"] = upstream OpenAI path = the paper's no-think
++        # Qwen3 wrapper. The paper's THINKING wrapper (qwen3_32b.py) has no ``` stop: with thinking ON a ``` inside the
++        # reasoning stream would cut the whole generation off, so the launcher passes F2F_STOPS='[]' for that dialect.
++        _stops = os.getenv("F2F_STOPS")
++        self._stops = list(json.loads(_stops)) if _stops else list(DEFAULT_OPENAI_STOPS)
+ 
+         api_key = api_key or os.getenv("OPENAI_API_KEY")
+         if not api_key:
+@@ -50,6 +65,8 @@ class OpenAIChat:
+         client_kwargs: Dict[str, Any] = {"api_key": api_key}
+         if org_id:
+             client_kwargs["organization"] = org_id
++        # witness eval patch: the SDK default (600 s) is too short for a 16k-token thinking turn on a loaded server.
++        client_kwargs["timeout"] = float(os.getenv("F2F_HTTP_TIMEOUT", "1800"))
+         self.client = OpenAI(**client_kwargs)
+ 
+         # Hardcoded decoding defaults (mirrors Llama33_70B keys)
+@@ -57,9 +74,9 @@ class OpenAIChat:
+             "temperature": 0.6,
+             "top_p": 0.95,
+             "top_k": 20,
+-            "max_new_tokens": 256,
++            "max_new_tokens": self._max_new_tokens,
+             "repetition_penalty": 1.0,
+-            "stop": DEFAULT_OPENAI_STOPS,
++            "stop": self._stops,
+         }
+ 
+         # Remote OpenAI chat models are not "thinking models" in your local sense
+@@ -105,7 +122,7 @@ class OpenAIChat:
+         stop = eff["stop"]
+ 
+         kw: Dict[str, Any] = {
+-            "model": self.model_name,
++            "model": self.api_model,
+             "messages": messages,
+         }
+ 
+@@ -162,6 +179,7 @@ class OpenAIChat:
+                 kwargs_api = self._build_api_kwargs(msg_list, eff, omit_temperature=False)
+                 resp = self.client.chat.completions.create(**kwargs_api)
+                 text = resp.choices[0].message.content or ""
++                self._log_call(resp, kwargs_api, attempt)
+                 return text
+ 
+             except (RateLimitError, APIError) as e:
+@@ -173,6 +191,7 @@ class OpenAIChat:
+                         kwargs_api = self._build_api_kwargs(msg_list, eff, omit_temperature=True)
+                         resp = self.client.chat.completions.create(**kwargs_api)
+                         text = resp.choices[0].message.content or ""
++                        self._log_call(resp, kwargs_api, attempt)
+                         return text
+                     except (RateLimitError, APIError) as e2:
+                         last_err = e2
+@@ -187,21 +206,68 @@ class OpenAIChat:
+ 
+         raise RuntimeError("OpenAI call failed after retries.")
+ 
++    def _log_call(self, resp: Any, kwargs_api: Dict[str, Any], attempt: int) -> None:
++        """witness eval patch: append one JSON line per successful API call (never raises)."""
++        if not self._call_log:
++            return
++        try:
++            ch = resp.choices[0]
++            msg = ch.message
++            extra = getattr(msg, "model_extra", None) or {}
++            reasoning = getattr(msg, "reasoning_content", None) or extra.get("reasoning_content")
++            usage = getattr(resp, "usage", None)
++            details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
++            # SGLang extension: matched_stop is a str when a stop STRING (e.g. ```) cut the generation, an int
++            # (token id) for a normal EOS. A stop-string cut yields finish_reason="stop" with partial/empty content,
++            # so the truncation gate (finish_reason=length) alone would not see it.
++            matched_stop = getattr(ch, "matched_stop", None)
++            if matched_stop is None:
++                matched_stop = (getattr(ch, "model_extra", None) or {}).get("matched_stop")
++            rec = {
++                "ts": time.time(),
++                "api_model": kwargs_api.get("model"),
++                "served_model": getattr(resp, "model", None),
++                "n_messages": len(kwargs_api.get("messages") or []),
++                "max_tokens": kwargs_api.get("max_tokens", kwargs_api.get("max_completion_tokens")),
++                "temperature": kwargs_api.get("temperature"),
++                "top_p": kwargs_api.get("top_p"),
++                "stop": kwargs_api.get("stop"),
++                "attempt": attempt,
++                "finish_reason": getattr(ch, "finish_reason", None),
++                "matched_stop": matched_stop,
++                "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage is not None else None,
++                "completion_tokens": getattr(usage, "completion_tokens", None) if usage is not None else None,
++                "reasoning_tokens": getattr(details, "reasoning_tokens", None) if details is not None else None,
++                "content_chars": len(msg.content or ""),
++                "reasoning_chars": len(reasoning) if isinstance(reasoning, str) else None,
++            }
++            with open(self._call_log, "a", encoding="utf-8") as f:
++                f.write(json.dumps(rec) + "\n")
++        except Exception:
++            pass
++
+     def describe_params(self) -> Dict[str, Any]:
+         """
+         Mirrors describe_params() from Llama33_70B, but marks backend='openai'.
+         """
+         d = self._defaults
++        # witness eval patch: this dict is stamped into every transcript's meta.decoding and .model_params.json,
++        # i.e. it is the trace stamp we trust. top_k / repetition_penalty are NEVER sent by _build_api_kwargs (the
++        # server's --sampling-defaults apply), so they are recorded as None + listed under params_not_sent instead
++        # of the structural-parity placeholders (20 / 1.0) that upstream wrote here.
+         return {
+             "model_name": self.model_name,
+-            "model_path": f"openai://{self.model_name}",
++            "api_model": self.api_model,
++            "base_url": str(getattr(self.client, "base_url", "")),
++            "model_path": f"openai://{self.api_model}",
+             "backend": "openai",
+             "dtype": "n/a",
+             "temperature": d["temperature"],
+             "top_p": d["top_p"],
+-            "top_k": d["top_k"],
++            "top_k": None,
+             "max_new_tokens": d["max_new_tokens"],
+-            "repetition_penalty": d["repetition_penalty"],
++            "repetition_penalty": None,
++            "params_not_sent": ["top_k", "repetition_penalty"],
+             "stop": d["stop"],
+             # Static placeholders for compatibility with your local wrappers
+             "tensor_parallel_size": None,
+diff --git a/wason_experiments/src/models/openai_compat_judge.py b/wason_experiments/src/models/openai_compat_judge.py
+new file mode 100644
+index 00000000..c861d043
+--- /dev/null
++++ b/wason_experiments/src/models/openai_compat_judge.py
+@@ -0,0 +1,149 @@
++"""
++OpenAI-compatible JUDGE wrapper (witness eval patch).
++
++Same call surface as Llama33_70B / Qwen25Coder32B (`generate(prompt_or_messages, GenParams) -> str`,
++`describe_params()`), but talks to an HTTP endpoint (SGLang / vLLM OpenAI server, or OpenRouter) instead of an
++in-process vLLM engine. Selected by run_judge_guess.py / run_judge_compatibility.py when --model-path starts
++with http:// or https://.
++
++--model-path spec:  <base_url>#<model_name>
++    e.g.  http://127.0.0.1:30100/v1#llama-3.3-70b-instruct
++          https://openrouter.ai/api/v1#meta-llama/llama-3.3-70b-instruct
++Environment:
++    F2F_JUDGE_API_KEY        bearer key (default "x"; SGLang ignores it)
++    F2F_JUDGE_API_KEY_FILE   read the key from a file instead (e.g. /root/.openrouter_key); never printed
++    F2F_JUDGE_PROVIDER       optional JSON for OpenRouter provider pinning, e.g.
++                             '{"order":["Crusoe"],"allow_fallbacks":false}'
++    F2F_JUDGE_CALL_LOG       optional JSONL path: one line per call (finish_reason, usage)
++The judge endpoint MUST be a different process/server from the evaluated model.
++"""
++
++from dataclasses import dataclass
++from typing import Dict, Any, List, Union, Optional
++import json
++import os
++import random
++import time
++
++from openai import OpenAI, APIError, RateLimitError
++
++
++@dataclass
++class GenParams:
++    # Identical field set to models/llama33_70b.GenParams so the judge scripts can build it unchanged.
++    temperature: float = 0.6
++    top_p: float = 0.95
++    top_k: int = 20
++    max_new_tokens: int = 256
++    repetition_penalty: float = 1.0
++    stop: Optional[List[str]] = None
++
++
++class OpenAICompatJudge:
++    def __init__(self, spec: str):
++        if "#" not in spec:
++            raise ValueError("judge spec must be <base_url>#<model_name>, got: %r" % spec)
++        base_url, model = spec.rsplit("#", 1)
++        self.base_url = base_url.rstrip("/")
++        self.model_name = model
++        self.model_path = spec
++        key = os.getenv("F2F_JUDGE_API_KEY") or "x"
++        key_file = os.getenv("F2F_JUDGE_API_KEY_FILE")
++        if key_file:
++            with open(key_file, "r", encoding="utf-8") as f:
++                key = f.read().strip()
++        self.client = OpenAI(api_key=key, base_url=self.base_url)
++        prov = os.getenv("F2F_JUDGE_PROVIDER")
++        self.provider = json.loads(prov) if prov else None
++        self._call_log = os.getenv("F2F_JUDGE_CALL_LOG") or None
++        self.supports_think = False
++        # describe_params() parity with the local wrappers
++        self._defaults: Dict[str, Any] = {
++            "temperature": 0.0, "top_p": 0.95, "top_k": 50, "max_new_tokens": 12,
++            "repetition_penalty": 1.0, "stop": None,
++        }
++
++    def _messages(self, prompt: Union[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
++        if isinstance(prompt, list):
++            return prompt
++        return [{"role": "user", "content": str(prompt)}]
++
++    def generate(self, prompt: Union[str, List[Dict[str, str]]], params: Optional[GenParams] = None) -> str:
++        p = params or GenParams()
++        kw: Dict[str, Any] = {
++            "model": self.model_name,
++            "messages": self._messages(prompt),
++            "temperature": float(p.temperature),
++            "top_p": float(p.top_p),
++            "max_tokens": int(p.max_new_tokens),
++        }
++        if p.stop:
++            kw["stop"] = list(p.stop)[:4]  # OpenAI schema allows at most 4 stop strings
++        extra: Dict[str, Any] = {}
++        if p.top_k is not None and int(p.top_k) > 0:
++            extra["top_k"] = int(p.top_k)
++        if p.repetition_penalty is not None and float(p.repetition_penalty) != 1.0:
++            extra["repetition_penalty"] = float(p.repetition_penalty)
++        if self.provider:
++            extra["provider"] = self.provider
++        if extra:
++            kw["extra_body"] = extra
++
++        last_err: Optional[Exception] = None
++        for attempt in range(6):
++            try:
++                resp = self.client.chat.completions.create(**kw)
++                text = resp.choices[0].message.content or ""
++                self._log_call(resp, kw, attempt)
++                return text.strip()
++            except (RateLimitError, APIError) as e:
++                last_err = e
++                time.sleep(min(2 ** attempt + random.random(), 20.0))
++        raise RuntimeError("judge call failed after retries: %s" % last_err)
++
++    def _log_call(self, resp: Any, kw: Dict[str, Any], attempt: int) -> None:
++        if not self._call_log:
++            return
++        try:
++            ch = resp.choices[0]
++            usage = getattr(resp, "usage", None)
++            rec = {
++                "ts": time.time(), "model": kw.get("model"), "served_model": getattr(resp, "model", None),
++                "provider": getattr(resp, "provider", None) or (getattr(resp, "model_extra", None) or {}).get("provider"),
++                "attempt": attempt, "finish_reason": getattr(ch, "finish_reason", None),
++                "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage is not None else None,
++                "completion_tokens": getattr(usage, "completion_tokens", None) if usage is not None else None,
++                "max_tokens": kw.get("max_tokens"), "temperature": kw.get("temperature"),
++            }
++            with open(self._call_log, "a", encoding="utf-8") as f:
++                f.write(json.dumps(rec) + "\n")
++        except Exception:
++            pass
++
++    def describe_params(self) -> Dict[str, Any]:
++        d = self._defaults
++        return {
++            "model_name": self.model_name, "model_path": self.model_path, "backend": "openai-compat",
++            "base_url": self.base_url, "provider_pin": self.provider, "dtype": "n/a",
++            "temperature": d["temperature"], "top_p": d["top_p"], "top_k": d["top_k"],
++            "max_new_tokens": d["max_new_tokens"], "repetition_penalty": d["repetition_penalty"], "stop": d["stop"],
++            "tensor_parallel_size": None, "gpu_memory_utilization": None, "max_model_len": None,
++        }
++
++
++def build_judge(model_path: str):
++    """http(s):// spec -> OpenAICompatJudge; otherwise the original local vLLM wrappers (lazy import)."""
++    if model_path.startswith(("http://", "https://")):
++        return OpenAICompatJudge(model_path)
++    base = os.path.basename(model_path.rstrip("/")).lower()
++    if "qwen2.5-coder-32b-instruct" in base or ("qwen2.5" in base and "coder" in base):
++        from .qwen25_coder_32b import Qwen25Coder32B
++        return Qwen25Coder32B(model_path)
++    from .llama33_70b import Llama33_70B
++    return Llama33_70B(model_path)
++
++
++def judge_display_name(model_path: str) -> str:
++    if model_path.startswith(("http://", "https://")) and "#" in model_path:
++        return model_path.rsplit("#", 1)[1]
++    return os.path.basename(model_path.rstrip("/")).lower() or "local-model"
+diff --git a/wason_experiments/src/run_experiment.py b/wason_experiments/src/run_experiment.py
+index 0a85122a..d76633ee 100644
+--- a/wason_experiments/src/run_experiment.py
++++ b/wason_experiments/src/run_experiment.py
+@@ -3,17 +3,8 @@ import argparse
+ from pathlib import Path
+ import json  # NEW
+ 
+-from .models.llama33_70b import Llama33_70B
+-from .models.qwq_32b import QwQ_32B
+-from .models.qwen3_8b import Qwen3_8B
+-from .models.qwen3_14b import Qwen3_14B
+-from .models.qwen3_32b import Qwen3_32B
+-from .models.qwen3_8b_no_think import Qwen3_8B_NoThink
+-from .models.qwen3_14b_no_think import Qwen3_14B_NoThink
+-from .models.qwen3_32b_no_think import Qwen3_32B_NoThink
+-from .models.gpt_4o import OpenAIChat
+-from .models.gemini_2_5_pro import Gemini25Pro
+-from .models.r1_distill_llama_70b import R1DistillLlama70B
++# NOTE (witness eval patch): model wrappers are imported lazily inside build_model() so that the
++# OpenAI-compatible player path (gpt-*) does not require vllm/torch to be installed.
+ from .experiments.baseline import BaselineExperiment
+ from .experiments.dual_goal import DualGoalExperiment
+ from .experiments.think_opposites import ThinkOppositesExperiment
+@@ -28,27 +19,38 @@ EXPERIMENTS = {
+ 
+ def build_model(name: str, model_path: str | None):
+     n = name.lower()
++    if n.startswith("gpt-"):
++        from .models.gpt_4o import OpenAIChat
++        return OpenAIChat(model=name)
+     if n in ["llama-3.3-70b", "llama", "llama33_70b", "llama-3.3-70b-instruct"]:
++        from .models.llama33_70b import Llama33_70B
+         return Llama33_70B(model_path=model_path)
+     if n in ["qwq-32b", "qwq32b", "qwq", "qwq_32b", "qwen-qwq-32b"]:
++        from .models.qwq_32b import QwQ_32B
+         return QwQ_32B(model_path=model_path or "/scratch/aj4332/models/qwq-32b")
+     if n in ["qwen3-8b", "qwen3_8b", "qwen3-8b-instruct"]:
++        from .models.qwen3_8b import Qwen3_8B
+         return Qwen3_8B(model_path=model_path)
+     if n in ["qwen3-14b", "qwen3_14b", "qwen3-14b-instruct"]:
++        from .models.qwen3_14b import Qwen3_14B
+         return Qwen3_14B(model_path=model_path)
+     if n in ["qwen3-32b", "qwen3_32b", "qwen3-32b-instruct"]:
++        from .models.qwen3_32b import Qwen3_32B
+         return Qwen3_32B(model_path=model_path)
+-    if n.startswith("gpt-"):
+-        return OpenAIChat(model=name)
+     if "gemini" in n:
++        from .models.gemini_2_5_pro import Gemini25Pro
+         return Gemini25Pro(model=name)
+     if n in ["r1-distill-llama-70b", "deepseek-r1-distill-llama-70b", "r1-llama-70b"]:
++        from .models.r1_distill_llama_70b import R1DistillLlama70B
+         return R1DistillLlama70B(model_path=model_path)
+     if n in ["qwen3-8b-no-think"]:
++        from .models.qwen3_8b_no_think import Qwen3_8B_NoThink
+         return Qwen3_8B_NoThink(model_path=model_path)
+     if n in ["qwen3-14b-no-think"]:
++        from .models.qwen3_14b_no_think import Qwen3_14B_NoThink
+         return Qwen3_14B_NoThink(model_path=model_path)
+     if n in ["qwen3-32b-no-think"]:
++        from .models.qwen3_32b_no_think import Qwen3_32B_NoThink
+         return Qwen3_32B_NoThink(model_path=model_path)
+     raise ValueError(f"Unknown model: {name}")
+ 
+diff --git a/wason_experiments/src/run_judge_compatibility.py b/wason_experiments/src/run_judge_compatibility.py
+index 054ff662..b6e547b5 100644
+--- a/wason_experiments/src/run_judge_compatibility.py
++++ b/wason_experiments/src/run_judge_compatibility.py
+@@ -16,9 +16,9 @@ import argparse, json, re, sys, signal, ast, types, os
+ from pathlib import Path
+ from typing import Dict, Iterable, List, Optional, Tuple, Any
+ 
+-# Keep using your existing GenParams shape from the Llama wrapper
+-from .models.llama33_70b import Llama33_70B, GenParams
+-from .models.qwen25_coder_32b import Qwen25Coder32B  # new
++# witness eval patch: same GenParams shape as the Llama wrapper; build_judge() picks the original local vLLM
++# wrappers for a local path or an OpenAI-compatible HTTP wrapper for an http(s)://...#model spec (no vllm import).
++from .models.openai_compat_judge import GenParams, build_judge, judge_display_name
+ 
+ # ------------------------- file discovery ----------------------------
+ 
+@@ -31,6 +31,12 @@ def iter_transcript_jsonl(expdir: Path) -> Iterable[Path]:
+             continue
+         if name.endswith(".model_params.json"):
+             continue
++        try:  # witness eval patch: only real transcripts (first line is the meta record)
++            with p.open("r", encoding="utf-8") as f:
++                if not f.readline().strip().startswith('{"meta"'):
++                    continue
++        except Exception:
++            continue
+         yield p
+ 
+ def read_jsonl(path: Path) -> List[Dict]:
+@@ -89,19 +95,24 @@ def iter_model_announces(doc: List[Dict]) -> Iterable[Tuple[int,str]]:
+             text = m.group(1).strip().splitlines()[0]
+             yield (rec.get("step", i), _normalize_announce_text(text))
+ 
+-def find_next_model_check(doc: List[Dict], start_idx: int) -> Optional[Tuple[int,Tuple[int,int,int]]]:
+-    for j in range(start_idx + 1, len(doc)):
+-        rec = doc[j]
+-        if not isinstance(rec, dict):
++def find_next_model_check(doc: List[Dict], start_step: int) -> Optional[Tuple[int,Tuple[int,int,int]]]:
++    # witness eval patch: match by STEP NUMBER, not by list index. Upstream indexed doc[start_idx+1:] with the
++    # announce's step number; transcripts contain extra "retry_trace" rows (written whenever a turn needed format
++    # retries, with the same step number as the following model row), so list index != step and every announce
++    # after the first retry was paired with an EARLIER Check triple. Since format retries are more frequent for
++    # some arms than others, that bug would bias I:C between arms.
++    best: Optional[Tuple[int, Tuple[int, int, int]]] = None
++    for j, rec in enumerate(doc):
++        if not isinstance(rec, dict) or rec.get("role") != "model":
+             continue
+-        if rec.get("role") != "model":
++        st = rec.get("step", j)
++        if not isinstance(st, int) or st <= start_step:
+             continue
+         content = (rec.get("content") or "").strip()
+         m = CHECK_RE.search(content)
+-        if m:
+-            a,b,c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+-            return (rec.get("step", j), (a,b,c))
+-    return None
++        if m and (best is None or st < best[0]):
++            best = (st, (int(m.group(1)), int(m.group(2)), int(m.group(3))))
++    return best
+ 
+ def collect_pairs(doc: List[Dict]) -> List[Dict]:
+     pairs = []
+@@ -162,6 +173,12 @@ def safe_load_rule(func_text: str, compile_timeout_s: int = 2) -> types.Function
+     for n in ast.walk(tree):
+         if isinstance(n, forbidden):
+             raise ValueError(f"Forbidden construct: {type(n).__name__}")
++        # witness eval patch: no dunder names/attributes -- closes the ().__class__.__bases__[0].__subclasses__()
++        # escape that the builtins whitelist alone does not (same rule as the WILT sandbox); legit rule bodies never need them.
++        if isinstance(n, ast.Attribute) and n.attr.startswith("__"):
++            raise ValueError(f"Forbidden dunder attribute: {n.attr}")
++        if isinstance(n, ast.Name) and n.id.startswith("__"):
++            raise ValueError(f"Forbidden dunder name: {n.id}")
+ 
+     fdefs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+     if not fdefs or fdefs[0].name != "rule":
+@@ -600,17 +617,16 @@ def main():
+ 
+     tmpl = load_prompt_template(prompt_path)
+ 
+-    base = os.path.basename(args.model_path.rstrip("/")).lower()
+-    if "qwen2.5-coder-32b-instruct" in base or ("qwen2.5" in base and "coder" in base):
+-        model = Qwen25Coder32B(args.model_path)
+-    else:
+-        model = Llama33_70B(args.model_path)
+-
+-    judger_model_name = base or "local-model"
++    model = build_judge(args.model_path)
++    judger_model_name = judge_display_name(args.model_path)
+ 
+     any_found = False
+     for transcript in iter_transcript_jsonl(expdir):
+         any_found = True
++        # witness eval patch: idempotent re-runs (set F2F_JUDGE_SKIP_EXISTING=0 to force re-judging)
++        if os.getenv("F2F_JUDGE_SKIP_EXISTING", "1") == "1" and \
++                transcript.with_name(transcript.stem + "_judge_compatibility.jsonl").exists():
++            continue
+         judge_file(transcript, model, tmpl, judger_model_name)
+ 
+     if not any_found:
+diff --git a/wason_experiments/src/run_judge_guess.py b/wason_experiments/src/run_judge_guess.py
+index f1d2f903..cc4eac20 100644
+--- a/wason_experiments/src/run_judge_guess.py
++++ b/wason_experiments/src/run_judge_guess.py
+@@ -17,12 +17,14 @@ Example:
+ """
+ 
+ from __future__ import annotations
+-import argparse, json, re, sys, dataclasses
++import argparse, json, re, sys, dataclasses, os
+ from pathlib import Path
+ from typing import Dict, Iterable, List, Optional, Tuple
+ 
+-# Use the same llama wrapper as run_experiments.py
+-from .models.llama33_70b import Llama33_70B, GenParams
++# witness eval patch: GenParams has the same fields as models/llama33_70b.GenParams; build_judge() returns the
++# original Llama33_70B for a local path and an OpenAI-compatible HTTP wrapper for an http(s)://...#model spec,
++# so this script no longer needs vllm at import time.
++from .models.openai_compat_judge import GenParams, build_judge
+ 
+ # Reuse your judge guidance (already tested)
+ from .core.judge_guidance import guidance_for_rule
+@@ -63,6 +65,12 @@ def iter_transcript_jsonl(expdir: Path) -> Iterable[Path]:
+             continue
+         if name.endswith(".model_params.json"):
+             continue
++        try:  # witness eval patch: only real transcripts (first line is the meta record)
++            with p.open("r", encoding="utf-8") as f:
++                if not f.readline().strip().startswith('{"meta"'):
++                    continue
++        except Exception:
++            continue
+         yield p
+ 
+ 
+@@ -113,19 +121,24 @@ def _iter_model_announces(doc: List[Dict], variant: str) -> Iterable[Tuple[int,
+         if role != "model":
+             continue
+ 
++        # witness eval patch: use the transcript's own step number. `steps` counts list rows, and transcripts
++        # contain extra "retry_trace" rows (same step number as the following model row) whenever a turn needed
++        # format retries; the analyzer compares this step against transcript/compat step numbers, so the row
++        # index drifted after the first retry.
++        step_no = rec.get("step", steps) if isinstance(rec.get("step", steps), int) else steps
+         if variant == "dual-goal":
+             m = _ANN_DAX_RE.search(content)
+             if m:
+                 dax_txt = m.group(1).strip().splitlines()[0]
+-                yield (steps, dax_txt)
++                yield (step_no, dax_txt)
+             else:
+                 m_any = _ANNOUNCE_RE.search(content)
+                 if m_any:
+-                    yield (steps, m_any.group(1).strip().splitlines()[0])
++                    yield (step_no, m_any.group(1).strip().splitlines()[0])
+         else:
+             m = _ANNOUNCE_RE.search(content)
+             if m:
+-                yield (steps, m.group(1).strip().splitlines()[0])
++                yield (step_no, m.group(1).strip().splitlines()[0])
+ 
+ 
+ # ------------------------- prompts & rendering -------------------------------
+@@ -227,9 +240,12 @@ def judge_file(
+     guidance = guidance_for_rule(gt_rule_name)
+ 
+     out_path = transcript_path.with_name(transcript_path.stem + "_judge_guesses.jsonl")
++    # witness eval patch: write to a temp file and rename, so an interrupted judge run never leaves a partial sidecar
++    # that the F2F_JUDGE_SKIP_EXISTING logic would later mistake for a finished one.
++    tmp_path = out_path.with_name(out_path.name + ".tmp")
+     count = 0
+ 
+-    with out_path.open("w", encoding="utf-8") as fout:
++    with tmp_path.open("w", encoding="utf-8") as fout:
+         for step_idx, announced in _iter_model_announces(doc, variant):
+             prompt = _render_prompt(tmpl, announced, gt_rule_name, guidance)
+             parsed, raw_text = _call_model_yes_no(
+@@ -255,6 +271,7 @@ def judge_file(
+                 "outcome": outcome,
+             }) + "\n")
+             count += 1
++    os.replace(tmp_path, out_path)
+ 
+     print(f"[judge] {transcript_path} -> {out_path} ({count} announcements)", flush=True)
+     return out_path
+@@ -272,12 +289,16 @@ def main():
+     expdir = Path(args.expdir).expanduser().resolve()
+     prompts_dir = Path(args.prompts_dir).expanduser().resolve()
+ 
+-    # Same model class used in run_experiments.py
+-    llama = Llama33_70B(args.model_path)
++    # Same model class used in run_experiments.py (or the HTTP judge wrapper for http(s):// specs)
++    llama = build_judge(args.model_path)
+ 
+     any_found = False
+     for transcript in iter_transcript_jsonl(expdir):
+         any_found = True
++        # witness eval patch: idempotent re-runs (set F2F_JUDGE_SKIP_EXISTING=0 to force re-judging)
++        if os.getenv("F2F_JUDGE_SKIP_EXISTING", "1") == "1" and \
++                transcript.with_name(transcript.stem + "_judge_guesses.jsonl").exists():
++            continue
+         judge_file(
+             transcript_path=transcript,
+             llama=llama,

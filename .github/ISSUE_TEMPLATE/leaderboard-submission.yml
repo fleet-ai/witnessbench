@@ -1,0 +1,45 @@
+name: Leaderboard submission
+description: Ask the maintainers to evaluate a model or an agent on the private test games.
+title: "Leaderboard submission: "
+labels: ["leaderboard"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell the maintainers what to evaluate and how to run it. This issue is public, and the maintainers reply in it:
+        do not paste API keys, other secrets or private contact details.
+  - type: input
+    id: model
+    attributes:
+      label: Model or agent
+      description: Its name and version.
+    validations:
+      required: true
+  - type: textarea
+    id: how-to-run
+    attributes:
+      label: How to run it
+      description: >-
+        An OpenRouter model id, or a link to the code of your policy or agent (and to its weights if the maintainers
+        should serve them).
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: >-
+        Reasoning effort, output-token limit and any other setting that differs from the evaluator defaults
+        in docs/evaluation.md.
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: Optional. Another way to reach you, only if you are fine with it being public.
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else the maintainers should know.

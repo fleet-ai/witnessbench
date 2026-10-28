@@ -1,0 +1,7 @@
+[
+{"cols":3,"rows":3,"start":[1,1],"end":[3,2],"estates":{"2,2":2}},
+{"cols":3,"rows":3,"start":[0,0],"end":[2,2],"estates":{"0,0":2}},
+{"cols":4,"rows":4,"start":[4,2],"end":[0,3],"estates":{"3,2":3}},
+{"cols":4,"rows":4,"start":[4,2],"end":[0,3],"estates":{"3,1":3}},
+{"cols":4,"rows":4,"start":[0,2],"end":[4,1],"estates":{"1,2":3,"3,1":2}}
+]

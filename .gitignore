@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local secrets
+.env
+.env.*
+
+# Outputs of the commands in README.md and docs/
+/runs/
+/trace_demo/
+/models/
+/checkpoints/
+/wandb/
+*.log
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

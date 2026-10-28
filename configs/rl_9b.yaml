@@ -1,0 +1,11 @@
+# Qwen3.5-9B on 4 GPUs of a node: Megatron TP2 + sequence parallel (DP2), four single-GPU
+# SGLang engines.
+megatron_model_type: qwen3.5-9B
+hf_checkpoint: ${MODEL_DIR}/Qwen3.5-9B
+ref_load: ${MODEL_DIR}/Qwen3.5-9B_torch_dist
+tensor_model_parallel_size: 2
+max_tokens_per_gpu: 9216
+rollout_num_gpus_per_engine: 1
+sglang_mem_fraction_static: 0.6
+actor_num_gpus_per_node: 4
+num_gpus_per_node: 4

@@ -1,0 +1,7 @@
+[
+{"cols":3,"rows":3,"start":[0,3],"end":[3,0],"wickets_rank1":[[2,2]],"wickets_rank2":[[0,1]]},
+{"cols":3,"rows":3,"start":[0,0],"end":[3,3],"wickets_rank1":[[2,1]],"wickets_rank2":[[0,2]]},
+{"cols":4,"rows":4,"start":[0,0],"end":[4,4],"wickets_rank1":[[4,3]],"wickets_rank2":[[3,3]]},
+{"cols":4,"rows":4,"start":[0,0],"end":[4,4],"wickets_rank1":[[4,3]],"wickets_rank2":[[2,3]]},
+{"cols":4,"rows":4,"start":[4,4],"end":[0,0],"wickets_rank1":[[3,0]],"wickets_rank2":[[2,3]],"wickets_rank3":[[2,1]]}
+]

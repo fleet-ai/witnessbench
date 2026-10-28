@@ -1,0 +1,49 @@
+# Broadcast-GRPO recipe shared by both model configurations.
+# Keys are miles arguments (underscores for dashes). Values reach miles verbatim;
+# `true` emits the bare flag. ${MODEL_DIR}, ${CKPT_DIR}, ${DATA_DIR}, ${RUN_NAME} are
+# filled in by scripts/train.py.
+load: ${CKPT_DIR}/${RUN_NAME}
+save: ${CKPT_DIR}/${RUN_NAME}
+save_interval: 1
+prompt_data: ${DATA_DIR}/train.jsonl
+input_key: prompt
+apply_chat_template: true
+rollout_shuffle: true
+num_rollout: 30
+rollout_batch_size: 22
+n_samples_per_prompt: 8
+rollout_max_response_len: 8192
+rollout_temperature: 1
+global_batch_size: 176
+balance_data: true
+optimizer: adam
+lr: 1e-6
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+advantage_estimator: grpo
+kl_loss_coef: 0.00
+entropy_coef: 0.00
+eps_clip: 0.2
+eps_clip_high: 0.28
+sequence_parallel: true
+pipeline_model_parallel_size: 1
+context_parallel_size: 1
+expert_model_parallel_size: 1
+expert_tensor_parallel_size: 1
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+use_dynamic_batch_size: true
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+attention_backend: flash
+colocate: true
+actor_num_nodes: 1
+custom_generate_function_path: witness_rl.hooks.generate
+custom_reward_post_process_path: witness_rl.hooks.reward_post_process
+num_steps_per_rollout: 1
+seed: 42
